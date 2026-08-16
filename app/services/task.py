@@ -293,10 +293,21 @@ def generate_terms(task_id, params, video_script):
         # 开启素材按文案顺序匹配后，关键词本身也必须按脚本叙事顺序生成；
         # 否则后续即使顺序下载和顺序拼接，也只能复用一组全局主题词，
         # 无法改善“后面内容的画面提前出现”的问题。
+        paragraph_number = max(1, params.paragraph_number)
+        if params.match_materials_to_script:
+            # One descriptive term per paragraph keeps the round-robin
+            # download in _download_videos_by_script_order aligned with
+            # the narration order.
+            terms_amount = paragraph_number
+        else:
+            # More terms than paragraphs gives the search a wider pool of
+            # visually diverse clips to draw from.
+            terms_amount = max(5, paragraph_number * 2)
         video_terms = llm.generate_terms(
             video_subject=params.video_subject,
             video_script=video_script,
-            amount=8 if params.match_materials_to_script else 5,
+            amount=terms_amount,
+            paragraph_number=paragraph_number,
             match_script_order=params.match_materials_to_script,
         )
     else:

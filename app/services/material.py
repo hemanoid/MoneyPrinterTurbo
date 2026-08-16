@@ -291,6 +291,72 @@ def _filter_materials_by_aspect(
     return filtered_items
 
 
+def _parse_pexels_videos(
+    videos: list,
+    search_term: str,
+    minimum_duration: int,
+    aspect: VideoAspect,
+    video_width: int,
+    video_height: int,
+) -> List[MaterialInfo]:
+    """Extract MaterialInfo items from a Pexels API videos list.
+
+    Selects the best-quality rendition at or above the target resolution
+    for each video, rather than stopping at the first dimension match.
+    """
+    video_items = []
+    for v in videos:
+        duration = v["duration"]
+        if duration < minimum_duration:
+            continue
+        video_files = v["video_files"]
+
+        # Collect all renditions that match the target aspect ratio and meet
+        # the minimum width requirement, then pick the highest-quality one.
+        candidates = []
+        for vf in video_files:
+            try:
+                w = int(vf["width"])
+                h = int(vf["height"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if _matches_video_aspect(w, h, aspect) and w >= video_width:
+                candidates.append((w, vf))
+
+        if not candidates:
+            continue
+
+        # Prefer the rendition closest to (but not below) the target width
+        # so we avoid downloading unnecessarily large files.
+        candidates.sort(key=lambda c: c[0])
+        _, best = candidates[0]
+
+        item = MaterialInfo()
+        item.provider = "pexels"
+        item.url = best["link"]
+        item.duration = duration
+        item.source_info = {
+            "provider": "pexels",
+            "search_term": search_term,
+            "asset_id": str(v.get("id")) if v.get("id") is not None else None,
+            "source_page": _safe_public_url(v.get("url")),
+            "creator": _creator_info(v.get("user")),
+            "rendition": {
+                "id": (
+                    str(best.get("id")) if best.get("id") is not None else None
+                ),
+                "width": int(best["width"]),
+                "height": int(best["height"]),
+            },
+        }
+        video_items.append(item)
+    return video_items
+
+
+# Minimum number of results from page 1 before we bother fetching page 2.
+_PEXELS_PAGE2_THRESHOLD = 5
+
+
 def search_videos_pexels(
     search_term: str,
     minimum_duration: int,
@@ -304,12 +370,17 @@ def search_videos_pexels(
         "Authorization": api_key,
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36",
     }
-    # Build URL
-    params = {"query": search_term, "per_page": 20, "orientation": video_orientation}
-    query_url = f"https://api.pexels.com/v1/videos/search?{urlencode(params)}"
-    logger.info(f"searching videos on pexels: term={search_term!r}")
 
-    try:
+    def _fetch_page(page: int) -> list:
+        params = {
+            "query": search_term,
+            "per_page": 20,
+            "orientation": video_orientation,
+            "sort": "relevant",
+            "page": page,
+        }
+        query_url = f"https://api.pexels.com/v1/videos/search?{urlencode(params)}"
+        logger.info(f"searching videos on pexels: term={search_term!r}, page={page}")
         r = requests.get(
             query_url,
             headers=headers,
@@ -318,51 +389,38 @@ def search_videos_pexels(
             timeout=(30, 60),
         )
         response = r.json()
-        video_items = []
         if "videos" not in response:
             logger.error("pexels video search returned an unsupported response")
-            return video_items
-        videos = response["videos"]
-        # loop through each video in the result
-        for v in videos:
-            duration = v["duration"]
-            # check if video has desired minimum duration
-            if duration < minimum_duration:
-                continue
-            video_files = v["video_files"]
-            # loop through each url to determine the best quality
-            for video in video_files:
-                w = int(video["width"])
-                h = int(video["height"])
-                if (
-                    _matches_video_aspect(w, h, aspect)
-                    and w == video_width
-                    and h == video_height
-                ):
-                    item = MaterialInfo()
-                    item.provider = "pexels"
-                    item.url = video["link"]
-                    item.duration = duration
-                    item.source_info = {
-                        "provider": "pexels",
-                        "search_term": search_term,
-                        "asset_id": (
-                            str(v.get("id")) if v.get("id") is not None else None
-                        ),
-                        "source_page": _safe_public_url(v.get("url")),
-                        "creator": _creator_info(v.get("user")),
-                        "rendition": {
-                            "id": (
-                                str(video.get("id"))
-                                if video.get("id") is not None
-                                else None
-                            ),
-                            "width": w,
-                            "height": h,
-                        },
-                    }
+            return []
+        return response["videos"]
+
+    try:
+        videos = _fetch_page(1)
+        video_items = _parse_pexels_videos(
+            videos, search_term, minimum_duration, aspect, video_width, video_height
+        )
+
+        # If page 1 yields few usable results, fetch page 2 to widen the pool.
+        if len(video_items) < _PEXELS_PAGE2_THRESHOLD:
+            logger.info(
+                f"pexels page 1 returned only {len(video_items)} usable clips for "
+                f"{search_term!r}, fetching page 2"
+            )
+            videos_p2 = _fetch_page(2)
+            seen_ids = {item.source_info.get("asset_id") for item in video_items}
+            extra = _parse_pexels_videos(
+                videos_p2,
+                search_term,
+                minimum_duration,
+                aspect,
+                video_width,
+                video_height,
+            )
+            for item in extra:
+                if item.source_info.get("asset_id") not in seen_ids:
                     video_items.append(item)
-                    break
+                    seen_ids.add(item.source_info.get("asset_id"))
+
         return video_items
     except Exception as e:
         logger.error(
@@ -388,6 +446,7 @@ def search_videos_pixabay(
         "q": search_term,
         "video_type": "all",  # Accepted values: "all", "film", "animation"
         "per_page": 50,
+        "order": "popular",
         "key": api_key,
     }
     query_url = f"https://pixabay.com/api/videos/?{urlencode(params)}"
@@ -449,9 +508,12 @@ def search_videos_pixabay(
             if duration < minimum_duration:
                 continue
             video_files = v["videos"]
-            # loop through each url to determine the best quality
-            for video_type in video_files:
-                video = video_files[video_type]
+
+            # Collect all renditions that satisfy orientation and minimum width,
+            # then pick the one closest to (but not below) the target width so
+            # we avoid pulling unnecessarily large files.
+            candidates = []
+            for video_type, video in video_files.items():
                 try:
                     w = int(video["width"])
                     h = int(video["height"])
@@ -463,31 +525,40 @@ def search_videos_pixabay(
                     _matches_video_aspect(w, h, aspect)
                 )
                 if orientation_matches and w >= video_width:
-                    item = MaterialInfo()
-                    item.provider = "pixabay"
-                    item.url = video["url"]
-                    item.duration = duration
-                    item.source_info = {
-                        "provider": "pixabay",
-                        "search_term": search_term,
-                        "asset_id": (
-                            str(v.get("id")) if v.get("id") is not None else None
-                        ),
-                        "source_page": _safe_public_url(v.get("pageURL")),
-                        "creator": _creator_info(
-                            {
-                                "id": v.get("user_id"),
-                                "name": v.get("user"),
-                            }
-                        ),
-                        "rendition": {
-                            "id": video_type,
-                            "width": w,
-                            "height": video.get("height"),
-                        },
+                    candidates.append((w, video_type, video))
+
+            if not candidates:
+                continue
+
+            candidates.sort(key=lambda c: c[0])
+            _, best_type, best = candidates[0]
+            best_w = int(best["width"])
+            best_h = int(best.get("height", 0))
+
+            item = MaterialInfo()
+            item.provider = "pixabay"
+            item.url = best["url"]
+            item.duration = duration
+            item.source_info = {
+                "provider": "pixabay",
+                "search_term": search_term,
+                "asset_id": (
+                    str(v.get("id")) if v.get("id") is not None else None
+                ),
+                "source_page": _safe_public_url(v.get("pageURL")),
+                "creator": _creator_info(
+                    {
+                        "id": v.get("user_id"),
+                        "name": v.get("user"),
                     }
-                    video_items.append(item)
-                    break
+                ),
+                "rendition": {
+                    "id": best_type,
+                    "width": best_w,
+                    "height": best_h,
+                },
+            }
+            video_items.append(item)
         return video_items
     except Exception as e:
         error_message = _redact_request_error(e, api_key)
@@ -756,6 +827,19 @@ def _search_videos_with_cache(
         return items
 
 
+# Minimum clips per search term before we try fallback providers.
+_FALLBACK_THRESHOLD = 3
+
+# Ordered registry used to build the fallback chain.  The primary provider
+# is tried first; remaining entries are tried in order only when the primary
+# yields fewer than _FALLBACK_THRESHOLD results for a given term.
+_PROVIDER_REGISTRY: dict[str, tuple[str, object]] = {
+    "pexels": ("pexels", search_videos_pexels),
+    "pixabay": ("pixabay", search_videos_pixabay),
+    "coverr": ("coverr", search_videos_coverr),
+}
+
+
 def download_videos(
     task_id: str,
     search_terms: List[str],
@@ -775,18 +859,51 @@ def download_videos(
         provider = "coverr"
         remote_search_videos = search_videos_coverr
 
+    # Build the ordered fallback chain: primary provider first, then others.
+    fallback_providers = [(provider, remote_search_videos)] + [
+        (p, fn)
+        for p, fn in _PROVIDER_REGISTRY.values()
+        if p != provider
+    ]
+
     def search_videos(
         search_term: str,
         minimum_duration: int,
         video_aspect: VideoAspect,
     ) -> List[MaterialInfo]:
-        return _search_videos_with_cache(
+        """Search the primary provider and fall back to others if needed."""
+        results = _search_videos_with_cache(
             provider=provider,
             search_videos=remote_search_videos,
             search_term=search_term,
             minimum_duration=minimum_duration,
             video_aspect=video_aspect,
         )
+        if len(results) >= _FALLBACK_THRESHOLD:
+            return results
+
+        # Primary provider returned too few clips — try the other providers.
+        seen_urls = {item.url for item in results}
+        for fb_provider, fb_fn in fallback_providers[1:]:
+            if len(results) >= _FALLBACK_THRESHOLD:
+                break
+            logger.info(
+                f"primary provider '{provider}' returned {len(results)} clips for "
+                f"{search_term!r} (threshold={_FALLBACK_THRESHOLD}), "
+                f"trying fallback provider '{fb_provider}'"
+            )
+            extra = _search_videos_with_cache(
+                provider=fb_provider,
+                search_videos=fb_fn,
+                search_term=search_term,
+                minimum_duration=minimum_duration,
+                video_aspect=video_aspect,
+            )
+            for item in extra:
+                if item.url not in seen_urls:
+                    results.append(item)
+                    seen_urls.add(item.url)
+        return results
 
     material_directory = config.app.get("material_directory", "").strip()
     if material_directory == "task":
