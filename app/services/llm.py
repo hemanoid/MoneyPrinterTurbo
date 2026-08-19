@@ -592,11 +592,45 @@ def _strip_code_fence(text: str) -> str:
     return t.strip()
 
 
+def _detect_chinese(text: str) -> bool:
+    """Return True if the text contains a significant proportion of CJK characters."""
+    if not text:
+        return False
+    cjk_chars = sum(1 for c in text if "\u4e00" <= c <= "\u9fff")
+    return cjk_chars / max(len(text), 1) > 0.15
+
+
+def _locale_hint(video_language: str, video_script: str) -> str:
+    """
+    Return a locale-awareness instruction for the term-generation prompt.
+
+    Stock footage libraries (Pexels, Pixabay, Coverr) skew heavily Western.
+    When content is in Chinese or targets a Chinese audience, search terms
+    must include cultural qualifiers ("Chinese", "Asian", city names) so the
+    API returns regionally appropriate clips instead of foreign scenes.
+    """
+    lang = (video_language or "").lower().strip()
+    is_chinese = lang.startswith("zh") or (
+        not lang and _detect_chinese(video_script)
+    )
+    if is_chinese:
+        return (
+            "7. This video is in Chinese and targets a Chinese/Asian audience. "
+            "Every term MUST include a cultural qualifier such as 'Chinese', "
+            "'Asian', or a specific Chinese city or landmark "
+            "(e.g. 'Chinese office meeting', 'Shanghai skyline night', "
+            "'Asian family dinner table', 'Beijing street crowd'). "
+            "Do NOT use terms that would return Western or foreign scenes."
+        )
+    return ""
+
+
 def generate_terms(
     video_subject: str,
     video_script: str,
     amount: int = 5,
     paragraph_number: int = 1,
+    video_language: str = "",
     match_script_order: bool = False,
     app_config=None,
 ) -> List[str]:
@@ -633,6 +667,8 @@ def generate_terms(
             ensure_ascii=False,
         )
 
+    locale_rule = _locale_hint(video_language, video_script)
+
     prompt = f"""
 # Role: Stock Footage Search Term Generator
 
@@ -646,7 +682,7 @@ def generate_terms(
 4. Every term must be visually distinct — no near-synonyms, no repeated actions or settings.
 5. Avoid abstract concepts ("success", "freedom", "happiness") — describe the concrete visual instead.
 6. All terms must be in English.
-{ordering_rule}
+{ordering_rule}{f"{chr(10)}{locale_rule}" if locale_rule else ""}
 
 ## Output Example:
 {output_example}

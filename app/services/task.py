@@ -308,6 +308,7 @@ def generate_terms(task_id, params, video_script):
             video_script=video_script,
             amount=terms_amount,
             paragraph_number=paragraph_number,
+            video_language=params.video_language or "",
             match_script_order=params.match_materials_to_script,
         )
     else:
