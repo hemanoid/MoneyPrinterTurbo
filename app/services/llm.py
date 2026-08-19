@@ -602,53 +602,50 @@ def generate_terms(
 ) -> List[str]:
     if match_script_order:
         goal = (
-            f"Generate exactly {amount} stock-video visual scene descriptions, "
-            f"one per paragraph of the script, in the same order as the narration. "
+            f"Generate exactly {amount} stock-footage search terms, one per "
+            f"paragraph of the script, in the same order as the narration. "
             f"The script has {paragraph_number} paragraph(s)."
         )
         ordering_rule = (
-            "7. preserve the narration order strictly — the first term describes "
-            "what should be visible during the first paragraph, and so on."
+            "7. preserve narration order strictly — term 1 matches paragraph 1, "
+            "term 2 matches paragraph 2, and so on."
         )
         example_terms = [
-            "close-up of hands opening a book on wooden desk",
-            *[
-                f"visual scene for paragraph {index}"
-                for index in range(2, max(amount, 1))
-            ],
-            "person smiling holding completed project outdoors",
+            "reading book desk",
+            *[f"paragraph {i} visual" for i in range(2, max(amount, 1))],
+            "person celebrating outdoors",
         ]
         output_example = json.dumps(example_terms[:amount], ensure_ascii=False)
     else:
         goal = (
-            f"Generate {amount} visually diverse stock-video scene descriptions "
-            f"that together cover the full visual arc of the video."
+            f"Generate {amount} stock-footage search terms that together cover "
+            f"the full visual arc of the video."
         )
         ordering_rule = ""
         output_example = json.dumps(
             [
-                "close-up of hands counting cash on wooden desk",
-                "aerial view of modern city skyline at sunset",
-                "person reviewing graphs on laptop in bright office",
-                "team celebrating around conference table",
-                "single plant growing through cracked concrete",
+                "counting cash",
+                "city skyline sunset",
+                "person typing laptop",
+                "team meeting office",
+                "plant growing soil",
             ][:amount],
             ensure_ascii=False,
         )
 
     prompt = f"""
-# Role: Video Visual Scene Planner
+# Role: Stock Footage Search Term Generator
 
 ## Goals:
 {goal}
 
 ## Constraints:
 1. Return a JSON array of strings only — no markdown, no commentary, no script text.
-2. Each term must be a descriptive visual scene phrase of 4–8 words (e.g. "close-up of hands typing on laptop", "aerial view of city at sunset").
-3. Describe concrete, filmable scenes — not abstract concepts. Replace "success" with "person celebrating achievement outdoors", "money" with "stacks of cash on wooden desk".
-4. Every term must be visually distinct — no near-synonyms or repeated settings.
-5. Avoid text overlays, logos, animated elements, or cartoon-style descriptions.
-6. All terms must be in English, phrased as stock footage search queries.
+2. Each term must be 2–4 words — short enough for keyword-based stock footage APIs to return results.
+3. Be specific: prefer "counting cash" over "money", "person typing laptop" over "technology", "city skyline sunset" over "city".
+4. Every term must be visually distinct — no near-synonyms, no repeated actions or settings.
+5. Avoid abstract concepts ("success", "freedom", "happiness") — describe the concrete visual instead.
+6. All terms must be in English.
 {ordering_rule}
 
 ## Output Example:
