@@ -859,11 +859,28 @@ def download_videos(
         provider = "coverr"
         remote_search_videos = search_videos_coverr
 
-    # Build the ordered fallback chain: primary provider first, then others.
+    def _provider_has_keys(cfg_key: str) -> bool:
+        """Return True if at least one API key is configured for this provider."""
+        keys = config.app.get(cfg_key)
+        if not keys:
+            return False
+        if isinstance(keys, str):
+            return bool(keys.strip())
+        return any(k.strip() for k in keys)
+
+    _PROVIDER_KEY_MAP = {
+        "pexels": "pexels_api_keys",
+        "pixabay": "pixabay_api_keys",
+        "coverr": "coverr_api_keys",
+    }
+
+    # Build the ordered fallback chain: primary first, then other providers
+    # that have API keys configured.  Skipping unconfigured providers here
+    # avoids a ValueError from get_api_key() crashing the download entirely.
     fallback_providers = [(provider, remote_search_videos)] + [
         (p, fn)
         for p, fn in _PROVIDER_REGISTRY.values()
-        if p != provider
+        if p != provider and _provider_has_keys(_PROVIDER_KEY_MAP[p])
     ]
 
     def search_videos(
@@ -892,13 +909,20 @@ def download_videos(
                 f"{search_term!r} (threshold={_FALLBACK_THRESHOLD}), "
                 f"trying fallback provider '{fb_provider}'"
             )
-            extra = _search_videos_with_cache(
-                provider=fb_provider,
-                search_videos=fb_fn,
-                search_term=search_term,
-                minimum_duration=minimum_duration,
-                video_aspect=video_aspect,
-            )
+            try:
+                extra = _search_videos_with_cache(
+                    provider=fb_provider,
+                    search_videos=fb_fn,
+                    search_term=search_term,
+                    minimum_duration=minimum_duration,
+                    video_aspect=video_aspect,
+                )
+            except Exception as e:
+                logger.warning(
+                    f"fallback provider '{fb_provider}' failed for {search_term!r}, "
+                    f"skipping: {type(e).__name__}: {e}"
+                )
+                continue
             for item in extra:
                 if item.url not in seen_urls:
                     results.append(item)
